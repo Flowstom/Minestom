@@ -3,13 +3,17 @@ package net.minestom.server.network.packet.server.play;
 import net.minestom.server.component.DataComponent;
 import net.minestom.server.component.DataComponentMap;
 import net.minestom.server.item.ItemStack;
+import net.minestom.server.item.ItemStackViewContext;
 import net.minestom.server.item.Material;
 import net.minestom.server.network.NetworkBuffer;
 import net.minestom.server.network.NetworkBufferTemplate;
 import net.minestom.server.network.packet.server.ServerPacket;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
+import java.util.Set;
 
 import static net.minestom.server.network.NetworkBuffer.*;
 
@@ -85,14 +89,64 @@ public record TradeListPacket(int windowId, List<Trade> trades,
     }
 
     public record ItemCost(Material material, int amount, DataComponentMap components) {
-        private static final NetworkBuffer.Type<ItemCost> NETWORK_TYPE = NetworkBufferTemplate.template(
+        private static final NetworkBuffer.Type<ItemCost> DELEGATE = NetworkBufferTemplate.template(
                 Material.NETWORK_TYPE, ItemCost::material,
                 VAR_INT, ItemCost::amount,
                 DataComponent.MAP_NETWORK_TYPE, ItemCost::components,
                 ItemCost::new);
+        private static final NetworkBuffer.Type<ItemCost> NETWORK_TYPE = new NetworkBuffer.Type<>() {
+            @Override
+            public void write(NetworkBuffer buffer, ItemCost value) {
+                final ItemStack stack = ItemStack.of(value.material, value.amount, value.components);
+                ItemStackViewContext.mapOutbound(stack, viewed -> {
+                    DELEGATE.write(buffer, withViewedComponents(value, stack, viewed));
+                    return null;
+                });
+            }
+
+            @Override
+            public ItemCost read(NetworkBuffer buffer) {
+                return DELEGATE.read(buffer);
+            }
+        };
 
         public ItemCost(ItemStack itemStack) {
             this(itemStack.material(), itemStack.amount(), itemStack.componentPatch());
+        }
+
+        private static ItemCost withViewedComponents(ItemCost cost, ItemStack original, ItemStack viewed) {
+            // ItemCost is an exact predicate, not an ItemStack patch; preserve every unchanged requirement.
+            final Set<DataComponent<?>> changed = new HashSet<>();
+            collectChangedPresentationComponents(original, viewed, original.componentPatch(), changed);
+            collectChangedPresentationComponents(original, viewed, viewed.componentPatch(), changed);
+            final DataComponentMap.Builder builder = DataComponentMap.builder();
+            for (DataComponent.Value entry : cost.components.entrySet()) {
+                if (entry.value() != null && !changed.contains(entry.component())) {
+                    set(builder, entry.component(), entry.value());
+                }
+            }
+            for (DataComponent<?> component : changed) {
+                final Object value = viewed.get(component);
+                if (value != null) set(builder, component, value);
+            }
+            return new ItemCost(cost.material, cost.amount, builder.build());
+        }
+
+        private static void collectChangedPresentationComponents(ItemStack original, ItemStack viewed,
+                                                                 DataComponentMap patch,
+                                                                 Set<DataComponent<?>> changed) {
+            for (DataComponent.Value entry : patch.entrySet()) {
+                final DataComponent<?> component = entry.component();
+                if (ItemStackViewContext.isPresentationComponent(component) &&
+                        !Objects.equals(original.get(component), viewed.get(component))) {
+                    changed.add(component);
+                }
+            }
+        }
+
+        @SuppressWarnings({"rawtypes", "unchecked"})
+        private static void set(DataComponentMap.Builder builder, DataComponent component, Object value) {
+            builder.set(component, value);
         }
     }
 }

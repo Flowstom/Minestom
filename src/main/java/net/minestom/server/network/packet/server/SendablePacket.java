@@ -18,4 +18,16 @@ public sealed interface SendablePacket
             case BufferedPacket bufferedPacket -> null;
         };
     }
+
+    /**
+     * Returns whether a pre-serialized representation may depend on player context.
+     */
+    static boolean isContextSensitive(SendablePacket packet) {
+        return switch (packet) {
+            case ServerPacket _ -> true;
+            case CachedPacket cachedPacket -> cachedPacket.isContextSensitive();
+            case FramedPacket _ -> true;
+            case BufferedPacket _ -> false;
+        };
+    }
 }

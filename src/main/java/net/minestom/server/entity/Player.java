@@ -52,6 +52,7 @@ import net.minestom.server.inventory.Inventory;
 import net.minestom.server.inventory.PlayerInventory;
 import net.minestom.server.inventory.click.ClickPreprocessor;
 import net.minestom.server.item.ItemStack;
+import net.minestom.server.item.ItemStackView;
 import net.minestom.server.item.Material;
 import net.minestom.server.item.component.WrittenBookContent;
 import net.minestom.server.listener.manager.PacketListenerManager;
@@ -142,6 +143,7 @@ public class Player extends LivingEntity implements CommandSender, HoverEventSou
     private String username;
     private Component usernameComponent;
     protected final PlayerConnection playerConnection;
+    private volatile ItemStackView itemStackView = ItemStackView.PASSTHROUGH;
 
     private volatile int latency;
     private Component displayName;
@@ -2383,6 +2385,33 @@ public class Player extends LivingEntity implements CommandSender, HoverEventSou
 
     public Locale getLocale() {
         return settings.locale();
+    }
+
+    /**
+     * Returns the transformation used for item stacks serialized for this player.
+     *
+     * @return this player's item stack view
+     */
+    @ApiStatus.Experimental
+    public ItemStackView getItemStackView() {
+        return itemStackView;
+    }
+
+    /**
+     * Sets the transformation used for item stacks serialized for this player.
+     * <p>
+     * This only affects subsequently serialized packets. Existing client state is
+     * not resent automatically. Resend each affected source: the player and open
+     * inventories, equipment to every viewer, entity metadata, recipes, trades, and
+     * advancement state as applicable. Transient effects such as particles must be
+     * emitted again. Registry-backed dialog data is encoded during configuration
+     * and cannot be refreshed as ordinary play state.
+     *
+     * @param itemStackView the new item stack view
+     */
+    @ApiStatus.Experimental
+    public void setItemStackView(ItemStackView itemStackView) {
+        this.itemStackView = Objects.requireNonNull(itemStackView, "itemStackView");
     }
 
     /**

@@ -15,6 +15,11 @@ final class ItemStackHashImpl {
 
     @SuppressWarnings("unchecked")
     public static ItemStack.Hash of(Transcoder<Integer> hashCoder, ItemStack itemStack) {
+        return ItemStackViewContext.mapOutbound(itemStack, mapped -> ofMapped(hashCoder, mapped));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static ItemStack.Hash ofMapped(Transcoder<Integer> hashCoder, ItemStack itemStack) {
         if (itemStack.isAir()) return ItemStack.Hash.AIR;
 
         final Map<DataComponent<?>, Integer> addedComponents = new HashMap<>();

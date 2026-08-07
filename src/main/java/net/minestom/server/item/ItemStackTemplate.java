@@ -6,11 +6,14 @@ import net.minestom.server.network.NetworkBuffer;
 import net.minestom.server.network.NetworkBufferTemplate;
 
 public interface ItemStackTemplate {
-    NetworkBuffer.Type<ItemStack> NETWORK_TYPE = NetworkBufferTemplate.template(
+    NetworkBuffer.Type<ItemStack> NETWORK_TYPE = ItemStackViewContext.networkType(NetworkBufferTemplate.template(
             Material.NETWORK_TYPE, ItemStack::material,
             NetworkBuffer.VAR_INT, ItemStack::amount,
-            DataComponent.PATCH_NETWORK_TYPE, (i) -> ((ItemStackImpl) i).components(),
-            ItemStack::of);
+            // Vanilla sends a patch here; resolved components would lose explicit removals.
+            DataComponent.PATCH_NETWORK_TYPE, ItemStack::componentPatch,
+            ItemStack::of));
     Codec<ItemStack> CODEC = ItemStack.CODEC
-            .orElse(Material.CODEC.transform(ItemStack::of, ItemStack::material));
+            .orElse(Material.CODEC.transform(
+                    material -> ItemStackViewContext.inbound(ItemStack.of(material)),
+                    ItemStack::material));
 }

@@ -16,6 +16,8 @@ public final class CreativeInventoryActionListener {
         if (player.getGameMode() != GameMode.CREATIVE) return;
         short slot = packet.slot();
         final ItemStack sentItem = packet.item();
+        // Match vanilla's creative validation before an untrusted client stack reaches server state.
+        if (!sentItem.isAir() && sentItem.amount() > sentItem.maxStackSize()) return;
         if (slot == -1) {
             // Drop item
             CreativeInventoryActionEvent event = new CreativeInventoryActionEvent(player, slot, sentItem);

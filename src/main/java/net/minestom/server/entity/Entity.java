@@ -115,7 +115,7 @@ public class Entity implements Viewable, Tickable, Schedulable, Snapshotable, Ev
     private static final Set<EntityType> NO_ENTITY_COLLISION_ENTITIES = Set.of(EntityType.TEXT_DISPLAY, EntityType.ITEM_DISPLAY,
             EntityType.BLOCK_DISPLAY);
     @SuppressWarnings("this-escape") // deliberate self registration, entities are not usable until spawned
-    private final CachedPacket destroyPacketCache = new CachedPacket(() -> new DestroyEntitiesPacket(getEntityId()));
+    private final CachedPacket destroyPacketCache = new CachedPacket(() -> new DestroyEntitiesPacket(getEntityId()), false);
 
     protected @Nullable Instance instance;
     protected Chunk currentChunk;

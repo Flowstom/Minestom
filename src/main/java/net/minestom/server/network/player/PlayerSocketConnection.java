@@ -1,13 +1,15 @@
 package net.minestom.server.network.player;
 
+import net.kyori.adventure.text.Component;
 import net.minestom.server.MinecraftServer;
 import net.minestom.server.ServerFlag;
-import net.minestom.server.adventure.MinestomAdventure;
 import net.minestom.server.entity.Player;
 import net.minestom.server.event.EventDispatcher;
 import net.minestom.server.event.ListenerHandle;
 import net.minestom.server.event.player.PlayerPacketOutEvent;
 import net.minestom.server.extras.mojangAuth.MojangCrypt;
+import net.minestom.server.item.ItemStackView;
+import net.minestom.server.item.ItemStackViewContext;
 import net.minestom.server.network.ConnectionState;
 import net.minestom.server.network.NetworkBuffer;
 import net.minestom.server.network.packet.PacketParser;
@@ -46,6 +48,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
+import java.util.function.UnaryOperator;
 import java.util.zip.DataFormatException;
 
 /**
@@ -141,12 +144,10 @@ public class PlayerSocketConnection extends PlayerConnection {
         final ConnectionState startingState = getClientState();
         final PacketReading.Result<ClientPacket> result;
         try {
-            result = PacketReading.readPackets(
-                    readBuffer,
-                    packetParser,
-                    startingState, PacketVanilla::nextClientState,
-                    compression()
-            );
+            final Player player = getPlayer();
+            result = player == null ? readPackets(readBuffer, packetParser, startingState) :
+                    ItemStackViewContext.withInbound(player.getItemStackView(), player,
+                            () -> readPackets(readBuffer, packetParser, startingState));
         } catch (DataFormatException e) {
             MinecraftServer.getExceptionManager().handleException(e);
             disconnect();
@@ -186,6 +187,17 @@ public class PlayerSocketConnection extends PlayerConnection {
                 readBuffer.resize(requiredCapacity);
             }
         }
+    }
+
+    private PacketReading.Result<ClientPacket> readPackets(NetworkBuffer readBuffer,
+                                                            PacketParser<ClientPacket> packetParser,
+                                                            ConnectionState startingState) throws DataFormatException {
+        return PacketReading.readPackets(
+                readBuffer,
+                packetParser,
+                startingState, PacketVanilla::nextClientState,
+                compression()
+        );
     }
 
     /**
@@ -352,6 +364,8 @@ public class PlayerSocketConnection extends PlayerConnection {
     private boolean writePacketSync(NetworkBuffer buffer, SendablePacket packet, boolean compressed) {
         final Player player = getPlayer();
         final ConnectionState state = getServerState();
+        ItemStackView itemStackView = ItemStackView.PASSTHROUGH;
+        UnaryOperator<Component> itemComponentOperator = null;
         if (player != null) {
             // Outgoing event
             if (outgoing.hasListener()) {
@@ -362,48 +376,77 @@ public class PlayerSocketConnection extends PlayerConnection {
                     if (event.isCancelled()) return true;
                 }
             }
+            // Snapshot the view after the event so changes made by a listener apply to this packet.
+            itemStackView = player.getItemStackView();
+            if (itemStackView != ItemStackView.PASSTHROUGH && SendablePacket.isContextSensitive(packet)) {
+                // Per-player serialization cannot reuse a representation cached for other players.
+                final ServerPacket serverPacket = SendablePacket.extractServerPacket(state, packet);
+                if (serverPacket != null) packet = serverPacket;
+            }
             // Translation
             if (ServerFlag.AUTOMATIC_COMPONENT_TRANSLATION && packet instanceof ServerPacket.ComponentHolding translatablePacket) {
-                packet = translatablePacket.copyWithOperator(component ->
-                        MinestomAdventure.COMPONENT_TRANSLATOR.apply(component, Objects.requireNonNullElseGet(player.getLocale(), MinestomAdventure::getDefaultLocale)));
+                final var componentOperator = ItemStackViewContext.componentOperator(player);
+                if (itemStackView == ItemStackView.PASSTHROUGH) {
+                    packet = translatablePacket.copyWithOperator(Objects.requireNonNull(componentOperator));
+                } else {
+                    // The item view must receive canonical components; its result is translated during serialization.
+                    packet = ItemStackViewContext.suppressItemTranslation(() ->
+                            translatablePacket.copyWithOperator(Objects.requireNonNull(componentOperator)));
+                    itemComponentOperator = componentOperator;
+                }
+            } else if (itemStackView != ItemStackView.PASSTHROUGH) {
+                itemComponentOperator = ItemStackViewContext.componentOperator(player);
             }
         }
         // Write packet
         final long start = buffer.writeIndex();
         final int compressionThreshold = compressed ? MinecraftServer.getCompressionThreshold() : 0;
+        final SendablePacket packetToWrite = packet;
+        final ItemStackView viewToWrite = itemStackView;
+        final var componentOperator = itemComponentOperator;
         try {
-            return switch (packet) {
-                case ServerPacket serverPacket -> {
-                    var nextState = PacketVanilla.nextServerState(serverPacket, state);
-                    if (nextState != state) setServerState(nextState);
-
-                    PacketWriting.writeFramedPacket(buffer, state, serverPacket, compressionThreshold);
-                    yield true;
-                }
-                case FramedPacket framedPacket -> {
-                    final NetworkBuffer body = framedPacket.body();
-                    yield writeBuffer(buffer, body, 0, body.capacity());
-                }
-                case CachedPacket cachedPacket -> {
-                    final NetworkBuffer body = cachedPacket.body(state);
-                    if (body != null) {
-                        yield writeBuffer(buffer, body, 0, body.capacity());
-                    } else {
-                        PacketWriting.writeFramedPacket(buffer, state, cachedPacket.packet(state), compressionThreshold);
-                        yield true;
-                    }
-                }
-                case BufferedPacket bufferedPacket -> {
-                    final NetworkBuffer rawBuffer = bufferedPacket.buffer();
-                    final long index = bufferedPacket.index();
-                    final long length = bufferedPacket.length();
-                    yield writeBuffer(buffer, rawBuffer, index, length);
-                }
-            };
+            if (player == null || !SendablePacket.isContextSensitive(packetToWrite) ||
+                    (viewToWrite == ItemStackView.PASSTHROUGH && componentOperator == null)) {
+                return writePacket(buffer, packetToWrite, state, compressionThreshold);
+            }
+            return ItemStackViewContext.withOutbound(viewToWrite, player, componentOperator,
+                    () -> writePacket(buffer, packetToWrite, state, compressionThreshold));
         } catch (IndexOutOfBoundsException exception) {
             buffer.writeIndex(start);
             return false;
         }
+    }
+
+    private boolean writePacket(NetworkBuffer buffer, SendablePacket packet, ConnectionState state,
+                                int compressionThreshold) {
+        return switch (packet) {
+            case ServerPacket serverPacket -> {
+                var nextState = PacketVanilla.nextServerState(serverPacket, state);
+                if (nextState != state) setServerState(nextState);
+
+                PacketWriting.writeFramedPacket(buffer, state, serverPacket, compressionThreshold);
+                yield true;
+            }
+            case FramedPacket framedPacket -> {
+                final NetworkBuffer body = framedPacket.body();
+                yield writeBuffer(buffer, body, 0, body.capacity());
+            }
+            case CachedPacket cachedPacket -> {
+                final NetworkBuffer body = cachedPacket.body(state);
+                if (body != null) {
+                    yield writeBuffer(buffer, body, 0, body.capacity());
+                } else {
+                    PacketWriting.writeFramedPacket(buffer, state, cachedPacket.packet(state), compressionThreshold);
+                    yield true;
+                }
+            }
+            case BufferedPacket bufferedPacket -> {
+                final NetworkBuffer rawBuffer = bufferedPacket.buffer();
+                final long index = bufferedPacket.index();
+                final long length = bufferedPacket.length();
+                yield writeBuffer(buffer, rawBuffer, index, length);
+            }
+        };
     }
 
     private static boolean writeBuffer(NetworkBuffer buffer, NetworkBuffer body, long index, long length) {

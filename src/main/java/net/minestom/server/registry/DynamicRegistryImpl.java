@@ -36,7 +36,9 @@ final class DynamicRegistryImpl<T> implements DynamicRegistry<T> {
     private static final Object REGISTRY_LOCK = new Object();
 
     private volatile @Nullable Registries registries = null;
-    private final CachedPacket vanillaRegistryDataPacket = new CachedPacket(() -> createRegistryDataPacket(registries, true));
+    // Registry entries are already NBT here, so packet-time item context cannot affect this cache.
+    private final CachedPacket vanillaRegistryDataPacket = new CachedPacket(
+            () -> createRegistryDataPacket(registries, true), false);
 
     private final List<T> idToValue;
     private final List<RegistryKey<T>> idToKey;

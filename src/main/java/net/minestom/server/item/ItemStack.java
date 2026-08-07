@@ -47,8 +47,10 @@ import java.util.function.UnaryOperator;
 public sealed interface ItemStack extends TagReadable, DataComponent.Holder, HoverEventSource<HoverEvent.ShowItem>
         permits ItemStackImpl {
 
-    NetworkBuffer.Type<ItemStack> NETWORK_TYPE = ItemStackImpl.networkType(DataComponent.PATCH_NETWORK_TYPE);
-    NetworkBuffer.Type<ItemStack> UNTRUSTED_NETWORK_TYPE = ItemStackImpl.networkType(DataComponent.UNTRUSTED_PATCH_NETWORK_TYPE);
+    NetworkBuffer.Type<ItemStack> NETWORK_TYPE = ItemStackViewContext.networkType(
+            ItemStackImpl.networkType(DataComponent.PATCH_NETWORK_TYPE));
+    NetworkBuffer.Type<ItemStack> UNTRUSTED_NETWORK_TYPE = ItemStackViewContext.networkType(
+            ItemStackImpl.networkType(DataComponent.UNTRUSTED_PATCH_NETWORK_TYPE));
     NetworkBuffer.Type<ItemStack> STRICT_NETWORK_TYPE = NETWORK_TYPE.transform(itemStack -> {
         Check.argCondition(itemStack.amount() == 0 || itemStack.isAir(), "ItemStack cannot be empty");
         return itemStack;
@@ -73,12 +75,12 @@ public sealed interface ItemStack extends TagReadable, DataComponent.Holder, Hov
 
         @Override
         public <D> Result<ItemStack> decodeFromMap(Transcoder<D> coder, Transcoder.MapLike<D> map) {
-            return DECODER.decodeFromMap(coder, map);
+            return DECODER.decodeFromMap(coder, map).mapResult(ItemStackViewContext::inbound);
         }
 
         @Override
         public <D> Result<D> encodeToMap(Transcoder<D> coder, ItemStack value, Transcoder.MapBuilder<D> map) {
-            return ENCODER.encodeToMap(coder, value, map);
+            return ItemStackViewContext.mapOutbound(value, mapped -> ENCODER.encodeToMap(coder, mapped, map));
         }
     };
 
@@ -350,6 +352,7 @@ public sealed interface ItemStack extends TagReadable, DataComponent.Holder, Hov
     }
 
     static ItemStack copyWithOperator(ItemStack itemStack, UnaryOperator<Component> operator) {
+        if (ItemStackViewContext.isItemTranslationSuppressed()) return itemStack;
         return itemStack
                 .with(DataComponents.CUSTOM_NAME, operator)
                 .with(DataComponents.ITEM_NAME, operator)

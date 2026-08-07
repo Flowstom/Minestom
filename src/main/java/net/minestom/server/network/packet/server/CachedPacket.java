@@ -48,6 +48,7 @@ public final class CachedPacket implements SendablePacket {
     }
 
     private final Supplier<ServerPacket> packetSupplier;
+    private final boolean contextSensitive;
 
     // Accessed through PACKET using acquire/release semantics.
     @SuppressWarnings("unused")
@@ -68,7 +69,19 @@ public final class CachedPacket implements SendablePacket {
      * @throws NullPointerException if {@code packetSupplier} is {@code null}
      */
     public CachedPacket(Supplier<ServerPacket> packetSupplier) {
+        this(packetSupplier, true);
+    }
+
+    /**
+     * Creates a cached packet and declares whether its payload can depend on
+     * per-connection serialization context.
+     *
+     * @param packetSupplier the packet supplier
+     * @param contextSensitive whether the shared frame must be bypassed for contextual serialization
+     */
+    public CachedPacket(Supplier<ServerPacket> packetSupplier, boolean contextSensitive) {
         this.packetSupplier = Objects.requireNonNull(packetSupplier, "packetSupplier");
+        this.contextSensitive = contextSensitive;
     }
 
     /**
@@ -78,8 +91,28 @@ public final class CachedPacket implements SendablePacket {
      * @throws NullPointerException if {@code packet} is {@code null}
      */
     public CachedPacket(ServerPacket packet) {
+        this(packet, true);
+    }
+
+    /**
+     * Creates a cached packet from a constant value and declares whether it can
+     * depend on per-connection serialization context.
+     *
+     * @param packet the packet to frame and cache
+     * @param contextSensitive whether the shared frame must be bypassed for contextual serialization
+     */
+    public CachedPacket(ServerPacket packet, boolean contextSensitive) {
+        this(() -> packet, contextSensitive);
         Objects.requireNonNull(packet, "packet");
-        this(() -> packet);
+    }
+
+    /**
+     * Returns whether contextual serialization must bypass the shared frame.
+     *
+     * @return whether this packet is context sensitive
+     */
+    public boolean isContextSensitive() {
+        return contextSensitive;
     }
 
     /**
