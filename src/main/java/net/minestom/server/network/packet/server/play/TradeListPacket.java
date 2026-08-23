@@ -117,8 +117,9 @@ public record TradeListPacket(int windowId, List<Trade> trades,
         private static ItemCost withViewedComponents(ItemCost cost, ItemStack original, ItemStack viewed) {
             // ItemCost is an exact predicate, not an ItemStack patch; preserve every unchanged requirement.
             final Set<DataComponent<?>> changed = new HashSet<>();
-            collectChangedPresentationComponents(original, viewed, original.componentPatch(), changed);
-            collectChangedPresentationComponents(original, viewed, viewed.componentPatch(), changed);
+            // Check both patches so changes to inherited components and explicit removals are included.
+            collectChangedComponents(original, viewed, original.componentPatch(), changed);
+            collectChangedComponents(original, viewed, viewed.componentPatch(), changed);
             final DataComponentMap.Builder builder = DataComponentMap.builder();
             for (DataComponent.Value entry : cost.components.entrySet()) {
                 if (entry.value() != null && !changed.contains(entry.component())) {
@@ -132,13 +133,12 @@ public record TradeListPacket(int windowId, List<Trade> trades,
             return new ItemCost(cost.material, cost.amount, builder.build());
         }
 
-        private static void collectChangedPresentationComponents(ItemStack original, ItemStack viewed,
-                                                                 DataComponentMap patch,
-                                                                 Set<DataComponent<?>> changed) {
+        private static void collectChangedComponents(ItemStack original, ItemStack viewed,
+                                                     DataComponentMap patch,
+                                                     Set<DataComponent<?>> changed) {
             for (DataComponent.Value entry : patch.entrySet()) {
                 final DataComponent<?> component = entry.component();
-                if (ItemStackViewContext.isPresentationComponent(component) &&
-                        !Objects.equals(original.get(component), viewed.get(component))) {
+                if (!Objects.equals(original.get(component), viewed.get(component))) {
                     changed.add(component);
                 }
             }

@@ -13,6 +13,7 @@ import net.minestom.server.adventure.serializer.nbt.NbtDataComponentValue;
 import net.minestom.server.codec.Codec;
 import net.minestom.server.codec.Transcoder;
 import net.minestom.server.dialog.Dialog;
+import net.minestom.server.item.ItemStackViewContext;
 import net.minestom.server.registry.Registries;
 import net.minestom.server.registry.RegistryTranscoder;
 import net.minestom.server.utils.nbt.BinaryTagWriter;
@@ -409,7 +410,8 @@ record ComponentNetworkBufferTypeImpl() implements NetworkBufferTypeImpl<Compone
             buffer.write(STRING_IO_UTF8, "value");
             writeInnerComponent(buffer, (Component) hoverEvent.value());
         } else if (hoverEvent.action() == HoverEvent.Action.SHOW_ITEM) {
-            var value = ((HoverEvent<HoverEvent.ShowItem>) hoverEvent).value();
+            var value = ItemStackViewContext.mapOutbound(
+                    ((HoverEvent<HoverEvent.ShowItem>) hoverEvent).value(), buffer.registries());
 
             buffer.write(BYTE, TAG_STRING);
             buffer.write(STRING_IO_UTF8, "id");
@@ -421,7 +423,8 @@ record ComponentNetworkBufferTypeImpl() implements NetworkBufferTypeImpl<Compone
 
             buffer.write(BYTE, TAG_COMPOUND);
             buffer.write(STRING_IO_UTF8, "components");
-            final Map<Key, NbtDataComponentValue> dataComponents = value.dataComponentsAs(NbtDataComponentValue.class);
+            final Map<Key, NbtDataComponentValue> dataComponents = ItemStackViewContext.showItemComponentsAsNbt(
+                    value, buffer.registries());
             if (!dataComponents.isEmpty()) {
                 final BinaryTagWriter nbtWriter = new BinaryTagWriter(buffer.ioView());
                 try {

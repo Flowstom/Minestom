@@ -11,14 +11,20 @@ import net.kyori.adventure.text.object.ObjectContents;
 import net.kyori.adventure.text.object.PlayerHeadObjectContents;
 import net.kyori.adventure.text.object.SpriteObjectContents;
 import net.minestom.server.adventure.MinestomAdventure;
+import net.minestom.server.adventure.serializer.nbt.NbtDataComponentValue;
 import net.minestom.server.codec.Transcoder.MapBuilder;
 import net.minestom.server.codec.Transcoder.MapLike;
 import net.minestom.server.dialog.Dialog;
+import net.minestom.server.item.ItemStackViewContext;
 import net.minestom.server.network.player.ResolvableProfile;
+import net.minestom.server.registry.Registries;
+import net.minestom.server.registry.RegistryTranscoder;
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Used internally to hold component codecs
@@ -172,10 +178,92 @@ public final class ComponentCodecs {
     private static final StructCodec<HoverEvent<Component>> SHOW_TEXT = StructCodec.struct(
             "value", COMPONENT_FORWARD, HoverEvent::value,
             HoverEvent::showText);
-    private static final StructCodec<HoverEvent<HoverEvent.ShowItem>> SHOW_ITEM = StructCodec.struct(
-            "id", Codec.KEY, hoverEvent -> hoverEvent.value().item(),
-            "count", Codec.INT.optional(1), hoverEvent -> hoverEvent.value().count(),
-            HoverEvent::showItem); // TODO(1.21.5): components
+    private static final StructCodec<HoverEvent<HoverEvent.ShowItem>> SHOW_ITEM = new StructCodec<>() {
+        @Override
+        public <D> Result<HoverEvent<HoverEvent.ShowItem>> decodeFromMap(Transcoder<D> coder, MapLike<D> map) {
+            final Result<Key> itemResult = map.getValue("id").map(value -> Codec.KEY.decode(coder, value));
+            if (!(itemResult instanceof Result.Ok(Key item))) return itemResult.cast();
+
+            final Result<Integer> countResult = map.hasValue("count")
+                    ? map.getValue("count").map(value -> Codec.INT.decode(coder, value))
+                    : new Result.Ok<>(1);
+            if (!(countResult instanceof Result.Ok(Integer count))) return countResult.cast();
+
+            return decodeShowItemComponents(coder, map)
+                    .mapResult(components -> HoverEvent.showItem(item, count, components));
+        }
+
+        @Override
+        public <D> Result<D> encodeToMap(Transcoder<D> coder, HoverEvent<HoverEvent.ShowItem> event,
+                                         MapBuilder<D> map) {
+            // This is the codec path used by item templates and NBT-backed
+            // packets, so it must share the same context as the wire serializer.
+            final HoverEvent.ShowItem value = ItemStackViewContext.mapOutbound(
+                    event.value(), showItemRegistries(coder));
+            final Result<D> itemResult = Codec.KEY.encode(coder, value.item());
+            if (!(itemResult instanceof Result.Ok(D item))) return itemResult.cast();
+            map.put("id", item);
+            if (value.count() != 1) map.put("count", coder.createInt(value.count()));
+
+            final Map<Key, NbtDataComponentValue> components;
+            try {
+                components = ItemStackViewContext.showItemComponentsAsNbt(value, showItemRegistries(coder));
+            } catch (RuntimeException exception) {
+                return new Result.Error<>("Unable to encode show_item components: " + exception.getMessage());
+            }
+            if (!components.isEmpty()) {
+                final MapBuilder<D> componentMap = coder.createMap();
+                for (final Map.Entry<Key, NbtDataComponentValue> entry : components.entrySet()) {
+                    final NbtDataComponentValue component = entry.getValue();
+                    final String key = component.value() == null
+                            ? "!" + entry.getKey().asString() : entry.getKey().asString();
+                    final Result<D> encoded = component.value() == null
+                            ? new Result.Ok<>(coder.emptyMap())
+                            : Transcoder.NBT.convertTo(coder, component.value());
+                    if (!(encoded instanceof Result.Ok(D encodedValue))) return encoded.cast();
+                    componentMap.put(key, encodedValue);
+                }
+                map.put("components", componentMap.build());
+            }
+            return new Result.Ok<>(map.build());
+        }
+    };
+
+    private static <D> Result<Map<Key, NbtDataComponentValue>> decodeShowItemComponents(
+            Transcoder<D> coder, MapLike<D> map) {
+        if (!map.hasValue("components")) return new Result.Ok<>(Map.of());
+        final Result<MapLike<D>> componentsResult = map.getValue("components").map(coder::getMap);
+        if (!(componentsResult instanceof Result.Ok(MapLike<D> components))) return componentsResult.cast();
+
+        final Map<Key, NbtDataComponentValue> result = new HashMap<>(components.size());
+        for (final String rawKey : components.keys()) {
+            final boolean removed = rawKey.startsWith("!");
+            final String keyString = removed ? rawKey.substring(1) : rawKey;
+            final Key key;
+            try {
+                key = Key.key(keyString);
+            } catch (IllegalArgumentException exception) {
+                return new Result.Error<>("Invalid show_item component key: " + rawKey);
+            }
+
+            final Result<D> rawValue = components.getValue(rawKey);
+            if (!(rawValue instanceof Result.Ok(D value))) return rawValue.cast();
+            if (removed) {
+                result.put(key, NbtDataComponentValue.removed());
+            } else {
+                final Result<BinaryTag> nbtValue = coder.convertTo(Transcoder.NBT, value);
+                if (!(nbtValue instanceof Result.Ok(BinaryTag nbt))) return nbtValue.cast();
+                result.put(key, NbtDataComponentValue.nbtDataComponentValue(nbt));
+            }
+        }
+        return new Result.Ok<>(Map.copyOf(result));
+    }
+
+    private static @Nullable Registries showItemRegistries(Transcoder<?> coder) {
+        return coder instanceof RegistryTranscoder<?> registryTranscoder
+                ? registryTranscoder.registries() : null;
+    }
+
     private static final StructCodec<HoverEvent<HoverEvent.ShowEntity>> SHOW_ENTITY = StructCodec.struct(
             "id", Codec.KEY, hoverEvent -> hoverEvent.value().type(),
             "uuid", Codec.UUID_COERCED, hoverEvent -> hoverEvent.value().id(),

@@ -1,7 +1,12 @@
 package net.minestom.server.item;
 
+import net.kyori.adventure.key.Key;
+import net.kyori.adventure.nbt.CompoundBinaryTag;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.event.HoverEvent;
 import net.minestom.server.MinecraftServer;
+import net.minestom.server.adventure.MinestomDataComponentValue;
+import net.minestom.server.adventure.serializer.nbt.NbtDataComponentValue;
 import net.minestom.server.component.DataComponents;
 import net.minestom.server.coordinate.Pos;
 import net.minestom.server.entity.GameMode;
@@ -203,24 +208,6 @@ class ItemStackViewIntegrationTest {
     }
 
     @Test
-    void rejectsPredictionRelevantChanges(Env env) {
-        final var connection = env.createConnection();
-        final Player player = connection.connect(env.createFlatInstance(), new Pos(0, 42, 0));
-        final ItemStack itemStack = ItemStack.of(Material.STONE);
-        final NetworkBuffer buffer = NetworkBuffer.resizableBuffer(env.process().registries());
-
-        player.setItemStackView((value, _) -> value.withAmount(2));
-        assertThrows(IllegalArgumentException.class, () -> ItemStackViewContext.withOutbound(
-                player.getItemStackView(), player, null,
-                () -> buffer.write(ItemStack.NETWORK_TYPE, itemStack)));
-
-        player.setItemStackView((value, _) -> value.with(DataComponents.MAX_STACK_SIZE, 2));
-        assertThrows(IllegalArgumentException.class, () -> ItemStackViewContext.withOutbound(
-                player.getItemStackView(), player, null,
-                () -> buffer.write(ItemStack.NETWORK_TYPE, itemStack)));
-    }
-
-    @Test
     void callbackCanEncodeItsInputWithoutReentering(Env env) {
         final var connection = env.createConnection();
         final Player player = connection.connect(env.createFlatInstance(), new Pos(0, 42, 0));
@@ -258,6 +245,91 @@ class ItemStackViewIntegrationTest {
 
         assertEquals(Component.text("translated"),
                 buffer.read(ItemStack.NETWORK_TYPE).get(DataComponents.CUSTOM_NAME));
+    }
+
+    @Test
+    void showItemHoverPayloadsAreViewed(Env env) {
+        final var connection = env.createConnection();
+        final Player player = connection.connect(env.createFlatInstance(), new Pos(0, 42, 0));
+        player.setItemStackView((value, _) -> withViewModel(value));
+
+        final Component component = Component.text("hover")
+                .hoverEvent(ItemStack.of(Material.DIAMOND).asHoverEvent());
+        final NetworkBuffer buffer = NetworkBuffer.resizableBuffer(env.process().registries());
+        ItemStackViewContext.withOutbound(player.getItemStackView(), player, null,
+                () -> buffer.write(NetworkBuffer.COMPONENT, component));
+        buffer.readIndex(0);
+
+        final Component decoded = buffer.read(NetworkBuffer.COMPONENT);
+        final HoverEvent.ShowItem showItem = (HoverEvent.ShowItem) decoded.hoverEvent().value();
+        final var components = showItem.dataComponentsAs(MinestomDataComponentValue.class);
+        assertEquals(VIEW_MODEL, components.get(DataComponents.CUSTOM_MODEL_DATA.key()).value());
+    }
+
+    @Test
+    void showItemHoverPayloadsAreViewedThroughComponentCodec(Env env) {
+        final var connection = env.createConnection();
+        final Player player = connection.connect(env.createFlatInstance(), new Pos(0, 42, 0));
+        player.setItemStackView((value, _) -> withViewModel(value));
+
+        final Component component = Component.text("hover")
+                .hoverEvent(ItemStack.of(Material.DIAMOND).asHoverEvent());
+        final NetworkBuffer buffer = NetworkBuffer.resizableBuffer(env.process().registries());
+        ItemStackViewContext.withOutbound(player.getItemStackView(), player, null,
+                () -> buffer.write(NetworkBuffer.JSON_COMPONENT, component));
+        buffer.readIndex(0);
+
+        final Component decoded = buffer.read(NetworkBuffer.JSON_COMPONENT);
+        final HoverEvent.ShowItem showItem = (HoverEvent.ShowItem) decoded.hoverEvent().value();
+        assertEquals(VIEW_MODEL,
+                showItem.dataComponentsAs(MinestomDataComponentValue.class)
+                        .get(DataComponents.CUSTOM_MODEL_DATA.key()).value());
+    }
+
+    @Test
+    void nestedShowItemStacksAreViewed(Env env) {
+        final var connection = env.createConnection();
+        final Player player = connection.connect(env.createFlatInstance(), new Pos(0, 42, 0));
+        player.setItemStackView((value, _) -> withViewModel(value));
+
+        final ItemStack nested = ItemStack.of(Material.DIAMOND);
+        final ItemStack bundle = ItemStack.of(Material.BUNDLE)
+                .with(DataComponents.BUNDLE_CONTENTS, List.of(nested));
+        final Component component = Component.text("hover").hoverEvent(bundle.asHoverEvent());
+        final NetworkBuffer buffer = NetworkBuffer.resizableBuffer(env.process().registries());
+        ItemStackViewContext.withOutbound(player.getItemStackView(), player, null,
+                () -> buffer.write(NetworkBuffer.COMPONENT, component));
+        buffer.readIndex(0);
+
+        final Component decoded = buffer.read(NetworkBuffer.COMPONENT);
+        final HoverEvent.ShowItem showItem = (HoverEvent.ShowItem) decoded.hoverEvent().value();
+        final Object value = showItem.dataComponentsAs(MinestomDataComponentValue.class)
+                .get(DataComponents.BUNDLE_CONTENTS.key()).value();
+        assertInstanceOf(List.class, value);
+        assertEquals(VIEW_MODEL, ((ItemStack) ((List<?>) value).getFirst())
+                .get(DataComponents.CUSTOM_MODEL_DATA));
+    }
+
+    @Test
+    void showItemHoverPayloadsPreserveUnknownComponents(Env env) {
+        final var connection = env.createConnection();
+        final Player player = connection.connect(env.createFlatInstance(), new Pos(0, 42, 0));
+        player.setItemStackView((value, _) -> withViewModel(value));
+
+        final Key unknownKey = Key.key("example:unknown");
+        final Component component = Component.text("hover").hoverEvent(HoverEvent.showItem(
+                Material.DIAMOND, 1, Map.of(unknownKey,
+                        NbtDataComponentValue.nbtDataComponentValue(CompoundBinaryTag.empty()))));
+        final NetworkBuffer buffer = NetworkBuffer.resizableBuffer(env.process().registries());
+        ItemStackViewContext.withOutbound(player.getItemStackView(), player, null,
+                () -> buffer.write(NetworkBuffer.COMPONENT, component));
+        buffer.readIndex(0);
+
+        final Component decoded = buffer.read(NetworkBuffer.COMPONENT);
+        final HoverEvent.ShowItem showItem = (HoverEvent.ShowItem) decoded.hoverEvent().value();
+        final var components = showItem.dataComponentsAs(NbtDataComponentValue.class);
+        assertEquals(CompoundBinaryTag.empty(), components.get(unknownKey).value());
+        assertTrue(components.containsKey(DataComponents.CUSTOM_MODEL_DATA.key()));
     }
 
     @Test

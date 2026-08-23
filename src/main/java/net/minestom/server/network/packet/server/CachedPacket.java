@@ -75,6 +75,9 @@ public final class CachedPacket implements SendablePacket {
     /**
      * Creates a cached packet and declares whether its payload can depend on
      * per-connection serialization context.
+     * <p>Set this to {@code false} only when the packet is known not to contain
+     * typed item stacks (or any other per-player serialization); false bypasses
+     * contextual reserialization for custom item views.
      *
      * @param packetSupplier the packet supplier
      * @param contextSensitive whether the shared frame must be bypassed for contextual serialization
@@ -97,6 +100,9 @@ public final class CachedPacket implements SendablePacket {
     /**
      * Creates a cached packet from a constant value and declares whether it can
      * depend on per-connection serialization context.
+     * <p>Set this to {@code false} only when the packet is known not to contain
+     * typed item stacks (or any other per-player serialization); false bypasses
+     * contextual reserialization for custom item views.
      *
      * @param packet the packet to frame and cache
      * @param contextSensitive whether the shared frame must be bypassed for contextual serialization

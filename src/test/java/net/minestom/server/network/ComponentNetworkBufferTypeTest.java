@@ -1,16 +1,24 @@
 package net.minestom.server.network;
 
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.event.DataComponentValue;
+import net.kyori.adventure.text.event.HoverEvent;
 import net.kyori.adventure.text.object.ObjectContents;
+import net.minestom.server.adventure.MinestomDataComponentValue;
 import net.minestom.server.adventure.serializer.nbt.NbtComponentSerializer;
+import net.minestom.server.adventure.serializer.nbt.NbtDataComponentValue;
+import net.minestom.server.component.DataComponents;
+import net.minestom.server.item.Material;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static net.minestom.server.network.NetworkBuffer.COMPONENT;
 import static net.minestom.server.network.NetworkBuffer.NBT;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class ComponentNetworkBufferTypeTest {
     // All of these tests use NbtComponentSerializerImpl as the source of truth. If there is an inaccuracy in that
@@ -87,6 +95,34 @@ public class ComponentNetworkBufferTypeTest {
     void testObjectComponentHeadUUID() {
         var comp = Component.object(ObjectContents.playerHead(UUID.randomUUID()));
         assertWriteReadEquality(comp);
+    }
+
+    @Test
+    void showItemComponentRemovalIsPreserved() {
+        var comp = Component.text("hover").hoverEvent(HoverEvent.showItem(
+                Material.DIAMOND, 1,
+                Map.of(DataComponents.MAX_STACK_SIZE.key(), DataComponentValue.removed())));
+        var array = NetworkBuffer.makeArray(buffer -> buffer.write(COMPONENT, comp));
+        var buffer = NetworkBuffer.wrap(array, 0, array.length);
+
+        var decoded = buffer.read(COMPONENT);
+        var showItem = (HoverEvent.ShowItem) decoded.hoverEvent().value();
+        assertTrue(showItem.dataComponents().get(DataComponents.MAX_STACK_SIZE.key()) instanceof DataComponentValue.Removed);
+    }
+
+    @Test
+    void showItemMinestomComponentsEncodeWithoutServerRegistries() {
+        var comp = Component.text("hover").hoverEvent(HoverEvent.showItem(
+                Material.DIAMOND, 1,
+                Map.of(DataComponents.MAX_STACK_SIZE.key(),
+                        MinestomDataComponentValue.dataComponentValue(2))));
+        var array = NetworkBuffer.makeArray(buffer -> buffer.write(COMPONENT, comp));
+        var buffer = NetworkBuffer.wrap(array, 0, array.length);
+
+        var decoded = buffer.read(COMPONENT);
+        var showItem = (HoverEvent.ShowItem) decoded.hoverEvent().value();
+        var value = showItem.dataComponents().get(DataComponents.MAX_STACK_SIZE.key());
+        assertTrue(value instanceof NbtDataComponentValue);
     }
 
     private static void assertWriteReadEquality(Component comp) {

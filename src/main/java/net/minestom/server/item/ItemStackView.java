@@ -6,11 +6,13 @@ import org.jetbrains.annotations.ApiStatus;
 /**
  * Controls how item stacks are represented to a player during network serialization.
  * <p>
- * Views only change the client presentation of an item. Inventories, entities,
+ * Views change only the serialized representation of an item. Inventories, entities,
  * and other server state continue to contain the original item stack. Material,
- * amount, emptiness, and interaction components must be preserved; this is checked
- * when a view is applied. Presentation components include names, lore, item and
- * custom models, tooltip settings, glint, and display colors/styles.
+ * amount, and emptiness must be preserved; this is checked when a view is applied.
+ * Any component may be changed because components can affect rendering, tooltips,
+ * client prediction, or interaction. A view that changes interaction-sensitive
+ * components is responsible for preserving the corresponding client/server
+ * invariants itself.
  * The view is applied recursively to typed item stacks stored inside components and
  * other packet data.
  * Outbound traversal visits an outer stack before its nested stacks; inbound
@@ -33,7 +35,11 @@ import org.jetbrains.annotations.ApiStatus;
  * <p>
  * The transformation happens while typed item codecs are running. Material-only
  * recipe displays, ingredients, already encoded NBT, and raw buffered packets do
- * not contain a typed item stack and are therefore not transformed.
+ * not contain a typed item stack and are therefore not transformed. Modern
+ * Adventure {@code show_item} hover payloads are adapted at component
+ * serialization; legacy opaque hover NBT is not interpreted by the modern
+ * component serializer, and unencodable component values are not partially
+ * rewritten.
  * Custom {@link net.minestom.server.network.player.PlayerConnection}
  * implementations are responsible for applying the item context around their own
  * packet encoding and decoding; the built-in socket connection does this automatically.
@@ -54,15 +60,16 @@ public interface ItemStackView {
     ItemStack view(ItemStack itemStack, Player player);
 
     /**
-     * Converts the presentation components of an item stack received from the
-     * client back to their server representation.
+     * Converts an item stack received from the client back to its server
+     * representation.
      * <p>
      * This is used for item stacks supplied by the client, currently creative
-     * inventory actions. Implementations which change those item stacks must
-     * override this method with the inverse transformation. The default leaves
-     * the received representation unchanged. Because this operation cannot recover
-     * information discarded by a lossy view, implementations should avoid replacing
-     * canonical presentation data unless they can restore it unambiguously.
+     * inventory actions. Implementations which change outbound components must
+     * override this method with the inverse transformation when the client can
+     * send those components back. The default leaves the received representation
+     * unchanged. Because this operation cannot recover information discarded by a
+     * lossy view, implementations should avoid transformations that make the
+     * canonical server value ambiguous.
      *
      * @param itemStack the item stack received from the player
      * @param player the sending player

@@ -1,17 +1,31 @@
 package net.minestom.server.item;
 
+import net.kyori.adventure.key.Key;
+import net.kyori.adventure.nbt.BinaryTag;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.event.DataComponentValue;
+import net.kyori.adventure.text.event.DataComponentValueConverterRegistry;
+import net.kyori.adventure.text.event.HoverEvent;
+import net.kyori.adventure.text.serializer.gson.GsonDataComponentValue;
 import net.minestom.server.ServerFlag;
 import net.minestom.server.adventure.MinestomAdventure;
+import net.minestom.server.adventure.MinestomDataComponentValue;
+import net.minestom.server.adventure.serializer.nbt.NbtDataComponentValue;
+import net.minestom.server.codec.Codec;
+import net.minestom.server.codec.Transcoder;
 import net.minestom.server.component.DataComponent;
-import net.minestom.server.component.DataComponents;
+import net.minestom.server.component.DataComponentMap;
 import net.minestom.server.entity.Player;
 import net.minestom.server.network.NetworkBuffer;
+import net.minestom.server.registry.Registries;
+import net.minestom.server.registry.RegistryTranscoder;
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Function;
@@ -51,6 +65,78 @@ public final class ItemStackViewContext {
 
     public static ItemStack inbound(ItemStack itemStack) {
         return mapInbound(itemStack);
+    }
+
+    /**
+     * Applies the active view to a modern Adventure {@code show_item} payload.
+     * <p>
+     * Adventure deliberately keeps these payloads independent from Minestom's
+     * {@link ItemStack} type. Decode the components we know how to represent,
+     * preserve everything else as raw NBT, and merge the viewed patch back into
+     * the original payload so an implementation-specific component is never
+     * silently discarded.
+     */
+    public static HoverEvent.ShowItem mapOutbound(HoverEvent.ShowItem showItem, @Nullable Registries registries) {
+        Objects.requireNonNull(showItem, "showItem");
+        if (!CONTEXT.isBound() || CONTEXT.get().direction != Direction.OUTBOUND)
+            return showItem;
+
+        final Context context = CONTEXT.get();
+        if (context.callbackDepth != 0 || !context.activeShowItems.add(showItem))
+            return showItem;
+        try {
+            final DecodedShowItem decoded = decodeShowItem(showItem, registries);
+            if (decoded == null) return showItem;
+
+            final ItemStack viewed = mapOutbound(decoded.itemStack, Function.identity());
+            return encodeShowItem(showItem, viewed, decoded.passthrough, registries);
+        } finally {
+            context.activeShowItems.remove(showItem);
+        }
+    }
+
+    /** Converts Adventure's value abstraction to the NBT representation used on the wire. */
+    public static Map<Key, NbtDataComponentValue> showItemComponentsAsNbt(HoverEvent.ShowItem showItem) {
+        return showItemComponentsAsNbt(showItem, null);
+    }
+
+    /** Converts Adventure's value abstraction using the packet's registry context when available. */
+    public static Map<Key, NbtDataComponentValue> showItemComponentsAsNbt(
+            HoverEvent.ShowItem showItem, @Nullable Registries registries) {
+        final Map<Key, DataComponentValue> values = showItem.dataComponents();
+        if (values.isEmpty()) return Map.of();
+
+        final Map<Key, NbtDataComponentValue> result = new HashMap<>(values.size());
+        for (final Map.Entry<Key, DataComponentValue> entry : values.entrySet()) {
+            final DataComponentValue value = entry.getValue();
+            if (value instanceof DataComponentValue.Removed) {
+                result.put(entry.getKey(), NbtDataComponentValue.removed());
+            } else if (value instanceof DataComponentValue.TagSerializable tagSerializable) {
+                result.put(entry.getKey(), NbtDataComponentValue.nbtDataComponentValue(
+                        MinestomAdventure.unwrapNbt(tagSerializable.asBinaryTag())));
+            } else if (value instanceof GsonDataComponentValue gsonValue) {
+                result.put(entry.getKey(), NbtDataComponentValue.nbtDataComponentValue(
+                        Transcoder.JSON.convertTo(Transcoder.NBT, gsonValue.element()).orElseThrow()));
+            } else if (value instanceof MinestomDataComponentValue minestomValue) {
+                final DataComponent<?> component = DataComponent.fromKey(entry.getKey());
+                if (component != null && component.codec() != null) {
+                    try {
+                        result.put(entry.getKey(), NbtDataComponentValue.nbtDataComponentValue(
+                                encodeComponent(component, minestomValue.value(), componentTranscoder(registries))));
+                        continue;
+                    } catch (RuntimeException ignored) {
+                        // Fall through to Adventure's registered conversion so
+                        // extension providers still get a chance to handle it.
+                    }
+                }
+                result.put(entry.getKey(), DataComponentValueConverterRegistry.convert(
+                        NbtDataComponentValue.class, entry.getKey(), value));
+            } else {
+                result.put(entry.getKey(), DataComponentValueConverterRegistry.convert(
+                        NbtDataComponentValue.class, entry.getKey(), value));
+            }
+        }
+        return Map.copyOf(result);
     }
 
     public static <T> T mapOutbound(ItemStack itemStack, Function<ItemStack, T> operation) {
@@ -113,21 +199,6 @@ public final class ItemStackViewContext {
 
     public static boolean hasMappedItemStack() {
         return CONTEXT.isBound() && CONTEXT.get().touched;
-    }
-
-    public static boolean isPresentationComponent(DataComponent<?> component) {
-        // Avoid an eager collection here: this class is reached while DataComponents initializes.
-        return component == DataComponents.CUSTOM_NAME ||
-                component == DataComponents.ITEM_NAME ||
-                component == DataComponents.ITEM_MODEL ||
-                component == DataComponents.LORE ||
-                component == DataComponents.RARITY ||
-                component == DataComponents.CUSTOM_MODEL_DATA ||
-                component == DataComponents.TOOLTIP_DISPLAY ||
-                component == DataComponents.ENCHANTMENT_GLINT_OVERRIDE ||
-                component == DataComponents.DYED_COLOR ||
-                component == DataComponents.MAP_COLOR ||
-                component == DataComponents.TOOLTIP_STYLE;
     }
 
     public static boolean isItemTranslationSuppressed() {
@@ -194,20 +265,103 @@ public final class ItemStackViewContext {
             throw new IllegalArgumentException("ItemStackView#" + method +
                     " must preserve item material, amount, and emptiness");
         }
-        validateComponents(input, output, input.componentPatch().entrySet(), method);
-        validateComponents(input, output, output.componentPatch().entrySet(), method);
+        // Components are deliberately unrestricted: no fixed list can cover every visual
+        // component or future component. Views which need interaction restrictions can
+        // enforce those policy-specific invariants in their own callback.
     }
 
-    private static void validateComponents(ItemStack input, ItemStack output,
-                                           Iterable<DataComponent.Value> entries, String method) {
-        for (DataComponent.Value entry : entries) {
-            final DataComponent<?> component = entry.component();
-            if (!isPresentationComponent(component) &&
-                    !Objects.equals(input.get(component), output.get(component))) {
-                throw new IllegalArgumentException("ItemStackView#" + method +
-                        " cannot change interaction component " + component.key());
+    private static @Nullable DecodedShowItem decodeShowItem(HoverEvent.ShowItem showItem,
+                                                              @Nullable Registries registries) {
+        final Material material = Material.fromKey(showItem.item());
+        // An obsolete/foreign item id cannot be represented by an ItemStack. It
+        // is safer to retain the original hover event than to emit a partial one.
+        if (material == null || showItem.count() <= 0) return null;
+
+        final Map<Key, NbtDataComponentValue> rawComponents;
+        try {
+            rawComponents = showItemComponentsAsNbt(showItem, registries);
+        } catch (RuntimeException ignored) {
+            // A third-party Adventure value may have no NBT conversion. The
+            // existing serializer will report that unsupported value as usual.
+            return null;
+        }
+
+        final DataComponentMap.PatchBuilder patch = DataComponentMap.patchBuilder();
+        final Map<Key, NbtDataComponentValue> passthrough = new HashMap<>();
+        final Transcoder<BinaryTag> coder = componentTranscoder(registries);
+        for (final Map.Entry<Key, NbtDataComponentValue> entry : rawComponents.entrySet()) {
+            final DataComponent<?> component = DataComponent.fromKey(entry.getKey());
+            final NbtDataComponentValue value = entry.getValue();
+            if (component == null || component.codec() == null) {
+                passthrough.put(entry.getKey(), value);
+                continue;
+            }
+
+            try {
+                if (value.value() == null) {
+                    patch.remove(component);
+                } else {
+                    setDecodedComponent(patch, component, value.value(), coder);
+                }
+            } catch (RuntimeException ignored) {
+                // Keep malformed or version-specific values byte-for-byte
+                // representable instead of dropping them during a view.
+                passthrough.put(entry.getKey(), value);
             }
         }
+        return new DecodedShowItem(ItemStack.of(material, showItem.count(), patch.build()), passthrough);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void setDecodedComponent(DataComponentMap.PatchBuilder patch,
+                                            DataComponent<?> component,
+                                            BinaryTag value,
+                                            Transcoder<BinaryTag> coder) {
+        final DataComponent<Object> typedComponent = (DataComponent<Object>) component;
+        final Object decoded = typedComponent.decode(coder, value).orElseThrow();
+        patch.set(typedComponent, decoded);
+    }
+
+    private static HoverEvent.ShowItem encodeShowItem(HoverEvent.ShowItem original, ItemStack viewed,
+                                                       Map<Key, NbtDataComponentValue> passthrough,
+                                                       @Nullable Registries registries) {
+        final Map<Key, NbtDataComponentValue> dataComponents = new HashMap<>(passthrough);
+        final Transcoder<BinaryTag> coder = componentTranscoder(registries);
+        for (final DataComponent.Value entry : viewed.componentPatch().entrySet()) {
+            final DataComponent<?> component = entry.component();
+            final Object value = entry.value();
+            if (value == null) {
+                dataComponents.put(component.key(), NbtDataComponentValue.removed());
+                continue;
+            }
+
+            final BinaryTag encoded;
+            try {
+                encoded = encodeComponent(component, value, coder);
+            } catch (RuntimeException ignored) {
+                // A component without an NBT codec cannot be represented in a
+                // ShowItem payload. Preserve the complete original event.
+                return original;
+            }
+            dataComponents.put(component.key(), NbtDataComponentValue.nbtDataComponentValue(encoded));
+        }
+        return HoverEvent.ShowItem.showItem(original.item(), original.count(), dataComponents);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static BinaryTag encodeComponent(DataComponent<?> component, Object value,
+                                             Transcoder<BinaryTag> coder) {
+        final DataComponent<Object> typedComponent = (DataComponent<Object>) component;
+        final Codec<Object> codec = typedComponent.codec();
+        if (codec == null) throw new IllegalArgumentException("Component has no NBT codec: " + component.key());
+        return typedComponent.encode(coder, value).orElseThrow();
+    }
+
+    private static Transcoder<BinaryTag> componentTranscoder(@Nullable Registries registries) {
+        // A context-free NetworkBuffer may not carry registries. Basic item
+        // components can still be transformed; registry-backed ones are kept
+        // as raw values by the decode/encode failure paths above.
+        return registries == null ? Transcoder.NBT : new RegistryTranscoder<>(Transcoder.NBT, registries);
     }
 
     private enum Direction {
@@ -221,6 +375,7 @@ public final class ItemStackViewContext {
         private final Player player;
         private final @Nullable UnaryOperator<Component> componentOperator;
         private final Set<ItemStack> active = Collections.newSetFromMap(new IdentityHashMap<>());
+        private final Set<HoverEvent.ShowItem> activeShowItems = Collections.newSetFromMap(new IdentityHashMap<>());
         private int callbackDepth;
         private boolean touched;
 
@@ -231,5 +386,8 @@ public final class ItemStackViewContext {
             this.player = player;
             this.componentOperator = componentOperator;
         }
+    }
+
+    private record DecodedShowItem(ItemStack itemStack, Map<Key, NbtDataComponentValue> passthrough) {
     }
 }
