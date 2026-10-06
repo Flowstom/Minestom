@@ -11,6 +11,7 @@ import net.minestom.server.inventory.AbstractInventory;
 import net.minestom.server.inventory.Inventory;
 import net.minestom.server.inventory.click.Click;
 import net.minestom.server.item.ItemStack;
+import net.minestom.server.item.ItemStackViewContext;
 import net.minestom.server.network.packet.client.common.ClientPongPacket;
 import net.minestom.server.network.packet.client.play.ClientClickWindowButtonPacket;
 import net.minestom.server.network.packet.client.play.ClientClickWindowPacket;
@@ -77,7 +78,10 @@ public class WindowListener {
 
         // Resync in case the client sent item does not match what we think it should be.
         ItemStack cursorItem = player.getInventory().getCursorItem();
-        if (!ItemStack.Hash.of(cursorItem, MinecraftServer.process()).equals(packet.clickedItem()))
+        final ItemStack.Hash cursorHash = ItemStackViewContext.withOutbound(player.getItemStackView(), player,
+                ItemStackViewContext.componentOperator(player),
+                () -> ItemStack.Hash.of(cursorItem, MinecraftServer.process()));
+        if (!cursorHash.equals(packet.clickedItem()))
             player.sendPacket(new SetCursorItemPacket(cursorItem));
     }
 

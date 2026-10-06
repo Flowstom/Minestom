@@ -39,7 +39,7 @@ public class LightingChunk extends DynamicChunk {
 
     private volatile @Nullable OcclusionData occlusionData;
     @SuppressWarnings("this-escape") // deliberate self registration during construction
-    final CachedPacket partialLightCache = new CachedPacket(this::createLightPacket);
+    final CachedPacket partialLightCache = new CachedPacket(this::createLightPacket, false);
     private @Nullable LightData partialLightData;
     private @Nullable LightData fullLightData;
 

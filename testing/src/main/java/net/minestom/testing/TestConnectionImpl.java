@@ -1,15 +1,17 @@
 package net.minestom.testing;
 
-import net.kyori.adventure.translation.GlobalTranslator;
 import net.minestom.server.ServerFlag;
 import net.minestom.server.ServerProcess;
-import net.minestom.server.adventure.MinestomAdventure;
 import net.minestom.server.coordinate.Pos;
 import net.minestom.server.entity.Player;
 import net.minestom.server.event.player.AsyncPlayerConfigurationEvent;
 import net.minestom.server.instance.Chunk;
 import net.minestom.server.instance.Instance;
+import net.minestom.server.item.ItemStackView;
+import net.minestom.server.item.ItemStackViewContext;
 import net.minestom.server.network.ConnectionState;
+import net.minestom.server.network.NetworkBuffer;
+import net.minestom.server.network.packet.PacketVanilla;
 import net.minestom.server.network.packet.server.SendablePacket;
 import net.minestom.server.network.packet.server.ServerPacket;
 import net.minestom.server.network.player.GameProfile;
@@ -86,18 +88,50 @@ final class TestConnectionImpl implements TestConnection {
         }
 
         private ServerPacket extractPacket(final SendablePacket packet) {
-            if (!(packet instanceof ServerPacket serverPacket))
-                return SendablePacket.extractServerPacket(getServerState(), packet);
-
             final Player player = getPlayer();
+            final ItemStackView itemStackView = player != null ? player.getItemStackView() : ItemStackView.PASSTHROUGH;
+            ServerPacket serverPacket;
+            if (packet instanceof ServerPacket direct) {
+                serverPacket = direct;
+            } else {
+                serverPacket = Objects.requireNonNull(SendablePacket.extractServerPacket(getServerState(), packet));
+                if (itemStackView == ItemStackView.PASSTHROUGH) return serverPacket;
+                if (!SendablePacket.isContextSensitive(packet)) return serverPacket;
+            }
             if (player == null) return serverPacket;
 
             if (ServerFlag.AUTOMATIC_COMPONENT_TRANSLATION && serverPacket instanceof ServerPacket.ComponentHolding) {
-                serverPacket = ((ServerPacket.ComponentHolding) serverPacket).copyWithOperator(component ->
-                        GlobalTranslator.render(component, Objects.requireNonNullElseGet(player.getLocale(), MinestomAdventure::getDefaultLocale)));
+                final var operator = ItemStackViewContext.componentOperator(player);
+                if (itemStackView == ItemStackView.PASSTHROUGH) {
+                    serverPacket = ((ServerPacket.ComponentHolding) serverPacket)
+                            .copyWithOperator(Objects.requireNonNull(operator));
+                } else {
+                    final ServerPacket.ComponentHolding translatable = (ServerPacket.ComponentHolding) serverPacket;
+                    serverPacket = ItemStackViewContext.suppressItemTranslation(() ->
+                            translatable.copyWithOperator(Objects.requireNonNull(operator)));
+                }
             }
 
-            return serverPacket;
+            return itemStackView == ItemStackView.PASSTHROUGH ? serverPacket :
+                    applyItemStackView(serverPacket, player, itemStackView);
+        }
+
+        @SuppressWarnings({"rawtypes", "unchecked"})
+        private ServerPacket applyItemStackView(ServerPacket serverPacket, Player player, ItemStackView itemStackView) {
+            final var registry = PacketVanilla.SERVER_PACKET_PARSER.stateRegistry(getServerState());
+            final NetworkBuffer.Type serializer = registry.packetInfo(serverPacket.getClass()).serializer();
+            final NetworkBuffer buffer = NetworkBuffer.resizableBuffer(ServerFlag.POOLED_BUFFER_SIZE, process.registries());
+            final boolean[] mapped = {false};
+            ItemStackViewContext.withOutbound(itemStackView, player,
+                    ItemStackViewContext.componentOperator(player),
+                    () -> {
+                        buffer.write(serializer, serverPacket);
+                        mapped[0] = ItemStackViewContext.hasMappedItemStack();
+                    });
+            // Preserve the semantic packet object when its serializer contains no item stack.
+            if (!mapped[0]) return serverPacket;
+            buffer.readIndex(0);
+            return (ServerPacket) buffer.read(serializer);
         }
 
         @Override

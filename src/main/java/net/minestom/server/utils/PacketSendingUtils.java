@@ -10,6 +10,7 @@ import net.minestom.server.ServerFlag;
 import net.minestom.server.adventure.ComponentHolder;
 import net.minestom.server.adventure.audience.PacketGroupingAudience;
 import net.minestom.server.entity.Player;
+import net.minestom.server.item.ItemStackView;
 import net.minestom.server.network.ConnectionState;
 import net.minestom.server.network.packet.server.CachedPacket;
 import net.minestom.server.network.packet.server.SendablePacket;
@@ -67,7 +68,9 @@ public final class PacketSendingUtils {
                                          Predicate<? super T> predicate) {
         final SendablePacket sendablePacket = groupedPacket(packet);
         players.forEach(player -> {
-            if (predicate.test(player)) player.sendPacket(sendablePacket);
+            // Only custom viewers need the semantic packet; everyone else keeps the shared frame.
+            if (predicate.test(player)) player.sendPacket(player.getItemStackView() == ItemStackView.PASSTHROUGH
+                    ? sendablePacket : packet);
         });
     }
 
@@ -79,7 +82,9 @@ public final class PacketSendingUtils {
      */
     public static void sendGroupedPacket(Collection<? extends Player> players, ServerPacket packet) {
         final SendablePacket sendablePacket = groupedPacket(packet);
-        players.forEach(player -> player.sendPacket(sendablePacket));
+        // Only custom viewers need the semantic packet; everyone else keeps the shared frame.
+        players.forEach(player -> player.sendPacket(player.getItemStackView() == ItemStackView.PASSTHROUGH
+                ? sendablePacket : packet));
     }
 
     public static void broadcastPlayPacket(ServerPacket packet) {

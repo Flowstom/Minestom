@@ -47,8 +47,10 @@ import java.util.function.UnaryOperator;
 public sealed interface ItemStack extends TagReadable, DataComponent.Holder, HoverEventSource<HoverEvent.ShowItem>
         permits ItemStackImpl {
 
-    NetworkBuffer.Type<ItemStack> NETWORK_TYPE = ItemStackImpl.networkType(DataComponent.PATCH_NETWORK_TYPE);
-    NetworkBuffer.Type<ItemStack> UNTRUSTED_NETWORK_TYPE = ItemStackImpl.networkType(DataComponent.UNTRUSTED_PATCH_NETWORK_TYPE);
+    NetworkBuffer.Type<ItemStack> NETWORK_TYPE = ItemStackViewContext.networkType(
+            ItemStackImpl.networkType(DataComponent.PATCH_NETWORK_TYPE));
+    NetworkBuffer.Type<ItemStack> UNTRUSTED_NETWORK_TYPE = ItemStackViewContext.networkType(
+            ItemStackImpl.networkType(DataComponent.UNTRUSTED_PATCH_NETWORK_TYPE));
     NetworkBuffer.Type<ItemStack> STRICT_NETWORK_TYPE = NETWORK_TYPE.transform(itemStack -> {
         Check.argCondition(itemStack.amount() == 0 || itemStack.isAir(), "ItemStack cannot be empty");
         return itemStack;
@@ -73,12 +75,16 @@ public sealed interface ItemStack extends TagReadable, DataComponent.Holder, Hov
 
         @Override
         public <D> Result<ItemStack> decodeFromMap(Transcoder<D> coder, Transcoder.MapLike<D> map) {
-            return DECODER.decodeFromMap(coder, map);
+            final Result<ItemStack> result = DECODER.decodeFromMap(coder, map);
+            return ItemStackViewContext.isClientTranscoder(coder)
+                    ? result.mapResult(ItemStackViewContext::inbound) : result;
         }
 
         @Override
         public <D> Result<D> encodeToMap(Transcoder<D> coder, ItemStack value, Transcoder.MapBuilder<D> map) {
-            return ENCODER.encodeToMap(coder, value, map);
+            if (!ItemStackViewContext.isClientTranscoder(coder))
+                return ENCODER.encodeToMap(coder, value, map);
+            return ItemStackViewContext.mapOutbound(value, mapped -> ENCODER.encodeToMap(coder, mapped, map));
         }
     };
 
@@ -156,6 +162,8 @@ public sealed interface ItemStack extends TagReadable, DataComponent.Holder, Hov
 
     /**
      * Returns a new ItemStack with the given Material set.
+     * The existing component patch is retained and resolves against the new material's defaults.
+     * Use {@link #withMaterial(Material, DataComponentMap)} to supply complete resolved components instead.
      *
      * @param material The material to apply
      * @return A new item stack with the new material
@@ -164,6 +172,20 @@ public sealed interface ItemStack extends TagReadable, DataComponent.Holder, Hov
      */
     @Contract(value = "_, -> new", pure = true)
     ItemStack withMaterial(Material material);
+
+    /**
+     * Returns an item with the given material and complete resolved components.
+     * Destination defaults absent from {@code components} are explicitly removed.
+     * To preserve the current effective components, pass {@link #components()}.
+     *
+     * @param material the destination material
+     * @param components the complete desired component map
+     * @return a new item retaining this item's amount, or air when the material is air
+     */
+    @Contract(value = "_, _ -> new", pure = true)
+    default ItemStack withMaterial(Material material, DataComponentMap components) {
+        return of(material, Math.max(1, amount()), DataComponentMap.createPatch(material.prototype(), components));
+    }
 
     @Contract(value = "_, -> new", pure = true)
     ItemStack withAmount(int amount);
@@ -350,6 +372,7 @@ public sealed interface ItemStack extends TagReadable, DataComponent.Holder, Hov
     }
 
     static ItemStack copyWithOperator(ItemStack itemStack, UnaryOperator<Component> operator) {
+        if (ItemStackViewContext.isItemTranslationSuppressed()) return itemStack;
         return itemStack
                 .with(DataComponents.CUSTOM_NAME, operator)
                 .with(DataComponents.ITEM_NAME, operator)
@@ -383,7 +406,7 @@ public sealed interface ItemStack extends TagReadable, DataComponent.Holder, Hov
          * @return the {@link Hash}
          */
         static Hash of(ItemStack itemStack, Registries registries) {
-            return ItemStackHashImpl.of(new RegistryTranscoder<>(Transcoder.CRC32_HASH, registries), itemStack);
+            return ItemStackHashImpl.of(ItemStackViewContext.clientTranscoder(Transcoder.CRC32_HASH, registries), itemStack);
         }
 
         NetworkBuffer.Type<Hash> NETWORK_TYPE = ItemStackHashImpl.NETWORK_TYPE;

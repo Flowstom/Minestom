@@ -104,6 +104,31 @@ public sealed interface DataComponentMap extends DataComponent.Holder permits Da
     }
 
     /**
+     * Creates a minimal patch which resolves to the supplied absolute component map.
+     * Unlike {@link #diff(DataComponentMap, DataComponentMap)}, this also removes prototype
+     * components absent from the supplied map. Null entries are treated as absent components.
+     *
+     * @param prototype the component defaults of the destination
+     * @param components the complete desired component map
+     * @return a patch whose resolved components equal {@code components}
+     */
+    static DataComponentMap createPatch(DataComponentMap prototype, DataComponentMap components) {
+        final var defaults = ((DataComponentMapImpl) prototype).components();
+        final var desired = ((DataComponentMapImpl) components).components();
+        final Int2ObjectArrayMap<@Nullable Object> patch = new Int2ObjectArrayMap<>();
+        for (var entry : desired.int2ObjectEntrySet()) {
+            final Object value = entry.getValue();
+            if (value != null && !value.equals(defaults.get(entry.getIntKey())))
+                patch.put(entry.getIntKey(), value);
+        }
+        for (var entry : defaults.int2ObjectEntrySet()) {
+            if (entry.getValue() != null && desired.get(entry.getIntKey()) == null)
+                patch.put(entry.getIntKey(), null);
+        }
+        return DataComponentMapImpl.fromMap(patch);
+    }
+
+    /**
      * Resolves a component patch against a prototype into an absolute component map.
      * Components set by the patch replace prototype values, components removed by the patch are omitted, and
      * components not mentioned by the patch retain their prototype values.

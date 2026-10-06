@@ -47,7 +47,7 @@ public final class ConnectionManager {
     private static final Component SHUTDOWN_TEXT = Component.text("Server shutting down");
 
     private final CachedPacket cachedTagsPacket =
-            new CachedPacket(() -> Registries.tagsPacket(MinecraftServer.getRegistries()));
+            new CachedPacket(() -> Registries.tagsPacket(MinecraftServer.getRegistries()), false);
 
     // All players once their Player object has been instantiated.
     private final Map<PlayerConnection, Player> connectionPlayerMap = new ConcurrentHashMap<>();

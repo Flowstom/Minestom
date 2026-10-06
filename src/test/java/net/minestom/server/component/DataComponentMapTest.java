@@ -134,4 +134,52 @@ public class DataComponentMapTest {
         assertNull(resolved.get(DataComponents.CUSTOM_NAME));
         assertEquals(Component.text("Item"), resolved.get(DataComponents.ITEM_NAME));
     }
+
+    @Test
+    void createPatchReconstructsAbsoluteComponents() {
+        var prototype = DataComponentMap.builder()
+                .set(DataComponents.MAX_STACK_SIZE, 1)
+                .set(DataComponents.REPAIR_COST, 0)
+                .set(DataComponents.MAX_DAMAGE, 10)
+                .build();
+        var desired = DataComponentMap.builder()
+                .set(DataComponents.MAX_STACK_SIZE, 64)
+                .set(DataComponents.REPAIR_COST, 0)
+                .set(DataComponents.CUSTOM_NAME, Component.text("Custom"))
+                .build();
+
+        var patch = DataComponentMap.createPatch(prototype, desired);
+
+        assertEquals(desired, DataComponentMap.applyPatch(prototype, patch));
+        assertFalse(patch.entrySet().stream().anyMatch(entry -> entry.component() == DataComponents.REPAIR_COST));
+        assertTrue(patch.entrySet().stream().anyMatch(entry -> entry.component() == DataComponents.MAX_DAMAGE && entry.value() == null));
+        assertEquals(10, prototype.get(DataComponents.MAX_DAMAGE));
+    }
+
+    @Test
+    void createPatchMatchingPrototypeIsEmpty() {
+        var components = DataComponentMap.builder().set(DataComponents.REPAIR_COST, 5).build();
+
+        assertSame(DataComponentMap.EMPTY, DataComponentMap.createPatch(components, components));
+        assertSame(DataComponentMap.EMPTY, DataComponentMap.createPatch(DataComponentMap.EMPTY, DataComponentMap.EMPTY));
+    }
+
+    @Test
+    void createPatchEmptyTargetRemovesDefaults() {
+        var prototype = DataComponentMap.builder().set(DataComponents.REPAIR_COST, 5).build();
+        var patch = DataComponentMap.createPatch(prototype, DataComponentMap.EMPTY);
+
+        assertFalse(patch.isEmpty());
+        assertSame(DataComponentMap.EMPTY, DataComponentMap.applyPatch(prototype, patch));
+    }
+
+    @Test
+    void createPatchTreatsNullEntriesAsAbsent() {
+        var prototype = DataComponentMap.builder().set(DataComponents.REPAIR_COST, 5).build();
+        var desired = DataComponentMap.patchBuilder().remove(DataComponents.REPAIR_COST).remove(DataComponents.CUSTOM_NAME).build();
+        var patch = DataComponentMap.createPatch(prototype, desired);
+
+        assertEquals(1, patch.entrySet().size());
+        assertSame(DataComponentMap.EMPTY, DataComponentMap.applyPatch(prototype, patch));
+    }
 }

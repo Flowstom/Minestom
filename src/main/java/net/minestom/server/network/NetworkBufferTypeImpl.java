@@ -11,6 +11,7 @@ import net.minestom.server.codec.Transcoder;
 import net.minestom.server.coordinate.Point;
 import net.minestom.server.coordinate.Pos;
 import net.minestom.server.coordinate.Vec;
+import net.minestom.server.item.ItemStackViewContext;
 import net.minestom.server.registry.Registries;
 import net.minestom.server.registry.RegistryTranscoder;
 import net.minestom.server.utils.Either;
@@ -431,9 +432,7 @@ interface NetworkBufferTypeImpl<T> extends NetworkBuffer.Type<T> {
         @Override
         public void write(NetworkBuffer buffer, Component value) {
             final Registries registries = buffer.registries();
-            final Transcoder<JsonElement> coder = registries != null
-                    ? new RegistryTranscoder<>(Transcoder.JSON, registries)
-                    : Transcoder.JSON;
+            final Transcoder<JsonElement> coder = ItemStackViewContext.clientTranscoder(Transcoder.JSON, registries);
             final String json = JsonUtil.toJson(Codec.COMPONENT.encode(coder, value).orElseThrow());
             buffer.write(STRING, json);
         }
@@ -867,7 +866,7 @@ interface NetworkBufferTypeImpl<T> extends NetworkBuffer.Type<T> {
         public void write(NetworkBuffer buffer, T value) {
             final Registries registries = buffer.registries();
             Check.stateCondition(registries == null, "Buffer does not have registries");
-            final Result<BinaryTag> result = nbtType.encode(new RegistryTranscoder<>(Transcoder.NBT, registries), value);
+            final Result<BinaryTag> result = nbtType.encode(ItemStackViewContext.clientTranscoder(Transcoder.NBT, registries), value);
             switch (result) {
                 case Result.Ok(BinaryTag tag) -> buffer.write(NBT, tag);
                 case Result.Error(String message) -> throw new IllegalArgumentException("Invalid NBT tag: " + message);

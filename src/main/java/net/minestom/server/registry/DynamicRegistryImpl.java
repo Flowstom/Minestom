@@ -11,6 +11,7 @@ import net.minestom.server.codec.Codec;
 import net.minestom.server.codec.Result;
 import net.minestom.server.codec.Transcoder;
 import net.minestom.server.gamedata.DataPack;
+import net.minestom.server.item.ItemStackViewContext;
 import net.minestom.server.network.packet.server.CachedPacket;
 import net.minestom.server.network.packet.server.SendablePacket;
 import net.minestom.server.network.packet.server.common.TagsPacket;
@@ -36,7 +37,9 @@ final class DynamicRegistryImpl<T> implements DynamicRegistry<T> {
     private static final Object REGISTRY_LOCK = new Object();
 
     private volatile @Nullable Registries registries = null;
-    private final CachedPacket vanillaRegistryDataPacket = new CachedPacket(() -> createRegistryDataPacket(registries, true));
+    // Registry entries are already NBT here, so packet-time item context cannot affect this cache.
+    private final CachedPacket vanillaRegistryDataPacket = new CachedPacket(
+            () -> createRegistryDataPacket(registries, true), false);
 
     private final List<T> idToValue;
     private final List<RegistryKey<T>> idToKey;
@@ -261,7 +264,7 @@ final class DynamicRegistryImpl<T> implements DynamicRegistry<T> {
 
     private RegistryDataPacket createRegistryDataPacket(Registries registries, boolean excludeVanilla) {
         Objects.requireNonNull(codec, "Cannot create registry data packet for server-only registry");
-        Transcoder<BinaryTag> transcoder = new RegistryTranscoder<>(Transcoder.NBT, registries);
+        Transcoder<BinaryTag> transcoder = ItemStackViewContext.clientTranscoder(Transcoder.NBT, registries);
         // Copy to avoid concurrent modification issues while iterating, as we are not synchronized on the registry
         final List<T> idToValue;
         final List<DataPack> packById;

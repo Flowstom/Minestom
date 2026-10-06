@@ -55,23 +55,11 @@ public record WindowItemsPacket(int windowId, int stateId, List<ItemStack> items
 
     @Override
     public ServerPacket copyWithOperator(UnaryOperator<Component> operator) {
-        UnaryOperator<List<Component>> loreOperator = lines -> {
-            final var translatedComponents = new ArrayList<Component>();
-            lines.forEach(component -> translatedComponents.add(operator.apply(component)));
-            return translatedComponents;
-        };
         return new WindowItemsPacket(
                 this.windowId,
                 this.stateId,
-                this.items.stream().map(stack -> stack
-                                .with(DataComponents.ITEM_NAME, operator)
-                                .with(DataComponents.CUSTOM_NAME, operator)
-                                .with(DataComponents.LORE, loreOperator))
-                        .toList(),
-                this.carriedItem
-                        .with(DataComponents.ITEM_NAME, operator)
-                        .with(DataComponents.CUSTOM_NAME, operator)
-                        .with(DataComponents.LORE, loreOperator)
+                this.items.stream().map(stack -> ItemStack.copyWithOperator(stack, operator)).toList(),
+                ItemStack.copyWithOperator(this.carriedItem, operator)
         );
     }
 }

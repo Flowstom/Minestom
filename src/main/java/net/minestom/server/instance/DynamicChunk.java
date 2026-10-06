@@ -58,7 +58,8 @@ public class DynamicChunk extends Chunk {
     protected final Int2ObjectOpenHashMap<Block> tickableMap = new Int2ObjectOpenHashMap<>(0);
 
     @SuppressWarnings("this-escape") // deliberate self registration during construction
-    final CachedPacket chunkCache = new CachedPacket(this::createChunkPacket);
+    // Chunk payloads contain no typed ItemStacks and remain safe to share between players.
+    final CachedPacket chunkCache = new CachedPacket(this::createChunkPacket, false);
 
     public DynamicChunk(Instance instance, int chunkX, int chunkZ) {
         super(instance, chunkX, chunkZ, true);
